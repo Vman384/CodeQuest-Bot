@@ -21,8 +21,8 @@ class Game:
         tank_id_message: dict = comms.read_message()
         self.tank_id = tank_id_message["message"]["your-tank-id"]
         self.other_tank_id = tank_id_message["message"]["enemy-tank-id"]
-
-
+        #previous position of the other tank
+        self.previous_position = []
         self.current_turn_message = None
 
         # We will store all game objects here
@@ -46,12 +46,21 @@ class Game:
         # Read all the objects and find the boundary objects
         boundaries = []
         self.walls = set()
+        self.destrucable_walls = set()
         for game_object in self.objects.values():
             if game_object["type"] == ObjectTypes.BOUNDARY.value:
                 boundaries.append(game_object)
             elif game_object['type'] == ObjectTypes.WALL.value:
                 print(game_object, sys.stderr)
                 self.walls.add(tuple(game_object['position']))
+            elif game_object['type'] == ObjectTypes.DESTRUCTIBLE_WALL.value:
+                print(game_object, sys.stderr)
+                self.destrucable_walls.add(tuple(game_object['position']))
+            elif game_object['type'] == ObjectTypes.CLOSING_BOUNDARY.value:
+                print(game_object, sys.stderr)
+                self.closing_boundary = game_object['position']
+                print(game_object['position'],sys.stderr)
+
 
 
         # The biggest X and the biggest Y among all Xs and Ys of boundaries must be the top right corner of the map.
@@ -94,18 +103,46 @@ class Game:
         return True
 
     def other_tank_angle(self):
-        x1,y1 = self.objects[self.other_tank_id]["position"][0], self.objects[self.other_tank_id]["position"][1]
+        x1, y1 = self.objects[self.other_tank_id]["position"][0], self.objects[self.other_tank_id]["position"][1]
         x2, y2 = self.objects[self.tank_id]["position"][0], self.objects[self.tank_id]["position"][1]
         dx = x1 - x2
         dy = y1 - y2
         angle = math.atan2(dy, dx)  # returns angle in radians
         angle = math.degrees(angle)  # convert to degrees
-        if self.is_wall_in_path(x2,y2,angle):
-            angle += 10
-        return angle 
 
-    def is_wall_in_path(self, my_x, my_y, angle, wall_size=18):
-        walls = self.walls
+        # Get the velocity of the other tank
+        velocity_dx1 = self.objects[self.other_tank_id]["velocity"][0]
+        velocity_dy1 = self.objects[self.other_tank_id]["velocity"][1]
+
+        # Predict the future position of the other tank
+        prediction_time1 = .1  # adjust this value as needed
+        predicted_x1 = x1 + velocity_dx1 * prediction_time1
+        predicted_y1 = y1 + velocity_dy1 * prediction_time1
+
+        # Get the velocity of your tank
+        velocity_dx2 = self.objects[self.tank_id]["velocity"][0]
+        velocity_dy2 = self.objects[self.tank_id]["velocity"][1]
+
+        # Predict the future position of your tank
+        epsilon = 1e-8  # small constant to prevent division by zero
+        prediction_time2 = .1 * (math.sqrt(velocity_dx2**2 + velocity_dy2**2) / (math.sqrt(velocity_dx1**2 + velocity_dy1**2) + epsilon))  # adjust this value as needed
+        predicted_x2 = x2 + velocity_dx2 * prediction_time2
+        predicted_y2 = y2 + velocity_dy2 * prediction_time2
+        # Calculate the angle to the other tank's predicted position from your tank's predicted position
+        dx = predicted_x1 - predicted_x2
+        dy = predicted_y1 - predicted_y2
+        angle = math.atan2(dy, dx)
+        angle = math.degrees(angle)
+
+        if self.is_wall_in_path(predicted_x2, predicted_y2, angle):
+            angle += 10
+
+        return angle
+
+
+    def is_wall_in_path(self, my_x, my_y, angle, wall_size=18, walls = None):
+        if walls is None:
+            walls = self.walls
         max_path = 100
         # Convert the angle to radians and get the direction vector
         angle_rad = math.radians(angle)
@@ -143,6 +180,46 @@ class Game:
 
         # If no walls are in the path, return False
         return False 
+    def move_tank(self):
+        # Parameters
+        spiral_radius = 100  # The radius of the spiral
+        spiral_speed = 1.0  # The speed of the spiral movement
+        randomness = 0.1  # The amount of randomness in the movement
+
+        # Get the current position of the tank
+        x, y = self.objects[self.tank_id]["position"]
+
+        # Calculate the center of the game area based on the positions of the border
+        border_positions = self.closing_boundary
+        center_x = sum(pos[0] for pos in border_positions) / len(border_positions)
+        center_y = sum(pos[1] for pos in border_positions) / len(border_positions)
+
+        # Calculate the current phase of the spiral based on the position of the tank
+        phase = math.atan2(y - center_y, x - center_x)
+
+        # Calculate the target position on the spiral
+        target_x = center_x + spiral_radius * math.cos(phase + spiral_speed)
+        target_y = center_y + spiral_radius * math.sin(phase + spiral_speed)
+
+        # Calculate the angle to the target position
+        dx = target_x - x
+        dy = target_y - y
+        target_angle = math.atan2(dy, dx)
+        target_angle = math.degrees(target_angle)
+
+        # Add some randomness to the target angle
+        target_angle += random.uniform(-randomness, randomness)
+
+        # Check if there's a wall in the path
+        if self.is_wall_in_path(x, y, target_angle):
+            # If there's a wall, choose the inner path by subtracting 90 degrees from the target angle
+            target_angle -= 90
+
+        return target_angle
+
+
+
+
     def respond_to_turn(self):
         """
         This is where you should write your bot code to process the data and respond to the game.
@@ -151,8 +228,8 @@ class Game:
         # Write your code here... For demonstration, this bot just shoots randomly every turn.
 
         comms.post_message({
-            "shoot": self.other_tank_angle()
-            #"move": random.uniform(0, random.randint(1, 360))
+            "shoot": self.other_tank_angle(),
+            "move": self.move_tank()
         })
 
 
