@@ -24,6 +24,7 @@ class Game:
         #previous position of the other tank
         self.previous_position = []
         self.current_turn_message = None
+        self.wall_in_path = False
 
         # We will store all game objects here
         self.objects = {}
@@ -51,15 +52,11 @@ class Game:
             if game_object["type"] == ObjectTypes.BOUNDARY.value:
                 boundaries.append(game_object)
             elif game_object['type'] == ObjectTypes.WALL.value:
-                print(game_object, sys.stderr)
                 self.walls.add(tuple(game_object['position']))
             elif game_object['type'] == ObjectTypes.DESTRUCTIBLE_WALL.value:
-                print(game_object, sys.stderr)
                 self.destrucable_walls.add(tuple(game_object['position']))
             elif game_object['type'] == ObjectTypes.CLOSING_BOUNDARY.value:
-                print(game_object, sys.stderr)
                 self.closing_boundary = game_object['position']
-                print(game_object['position'],sys.stderr)
 
 
 
@@ -92,6 +89,8 @@ class Game:
         for deleted_object_id in self.current_turn_message["message"]["deleted_objects"]:
             try:
                 del self.objects[deleted_object_id]
+                self.powerups.remove(deleted_object_id)
+                self.bullets.remove(deleted_object_id)
             except KeyError:
                 pass
 
@@ -99,45 +98,29 @@ class Game:
         # NOTE: you might want to do some additional logic here. For example check if a new bullet has been shot or a
         # new powerup is now spawned, etc.
         self.objects.update(self.current_turn_message["message"]["updated_objects"])
+        self.bullets = set()
+        self.powerups = set()
+        for game_object in self.objects.values():
+            if game_object["type"] == ObjectTypes.BULLET.value:
+                self.bullets.add(tuple(game_object['position']))
+            elif game_object['type'] == ObjectTypes.POWERUP.value:
+                self.powerups.add(tuple(game_object['position'])) 
 
         return True
 
     def other_tank_angle(self):
-        x1, y1 = self.objects[self.other_tank_id]["position"][0], self.objects[self.other_tank_id]["position"][1]
+        self.x1, self.y1 = self.objects[self.other_tank_id]["position"][0], self.objects[self.other_tank_id]["position"][1]
         x2, y2 = self.objects[self.tank_id]["position"][0], self.objects[self.tank_id]["position"][1]
-        dx = x1 - x2
-        dy = y1 - y2
+        dx = self.x1 - x2
+        dy = self.y1 - y2
         angle = math.atan2(dy, dx)  # returns angle in radians
         angle = math.degrees(angle)  # convert to degrees
 
-        # Get the velocity of the other tank
-        velocity_dx1 = self.objects[self.other_tank_id]["velocity"][0]
-        velocity_dy1 = self.objects[self.other_tank_id]["velocity"][1]
-
-        # Predict the future position of the other tank
-        prediction_time1 = .1  # adjust this value as needed
-        predicted_x1 = x1 + velocity_dx1 * prediction_time1
-        predicted_y1 = y1 + velocity_dy1 * prediction_time1
-
-        # Get the velocity of your tank
-        velocity_dx2 = self.objects[self.tank_id]["velocity"][0]
-        velocity_dy2 = self.objects[self.tank_id]["velocity"][1]
-
-        # Predict the future position of your tank
-        epsilon = 1e-8  # small constant to prevent division by zero
-        prediction_time2 = .1 * (math.sqrt(velocity_dx2**2 + velocity_dy2**2) / (math.sqrt(velocity_dx1**2 + velocity_dy1**2) + epsilon))  # adjust this value as needed
-        predicted_x2 = x2 + velocity_dx2 * prediction_time2
-        predicted_y2 = y2 + velocity_dy2 * prediction_time2
-        # Calculate the angle to the other tank's predicted position from your tank's predicted position
-        dx = predicted_x1 - predicted_x2
-        dy = predicted_y1 - predicted_y2
-        angle = math.atan2(dy, dx)
-        angle = math.degrees(angle)
-
-        if self.is_wall_in_path(predicted_x2, predicted_y2, angle):
+        if self.is_wall_in_path(x2, y2, angle):
             angle += 10
 
         return angle
+
 
 
     def is_wall_in_path(self, my_x, my_y, angle, wall_size=18, walls = None):
@@ -185,21 +168,22 @@ class Game:
         spiral_radius = 100  # The radius of the spiral
         spiral_speed = 1.0  # The speed of the spiral movement
         randomness = 0.1  # The amount of randomness in the movement
+        bullet_distance_threshold = 75
 
         # Get the current position of the tank
         x, y = self.objects[self.tank_id]["position"]
 
         # Calculate the center of the game area based on the positions of the border
         border_positions = self.closing_boundary
-        center_x = sum(pos[0] for pos in border_positions) / len(border_positions)
-        center_y = sum(pos[1] for pos in border_positions) / len(border_positions)
+        self.center_x = sum(pos[0] for pos in border_positions) / len(border_positions)
+        self.center_y = sum(pos[1] for pos in border_positions) / len(border_positions)
 
         # Calculate the current phase of the spiral based on the position of the tank
-        phase = math.atan2(y - center_y, x - center_x)
+        phase = math.atan2(y - self.center_y, x - self.center_x)
 
         # Calculate the target position on the spiral
-        target_x = center_x + spiral_radius * math.cos(phase + spiral_speed)
-        target_y = center_y + spiral_radius * math.sin(phase + spiral_speed)
+        target_x = self.center_x + spiral_radius * math.cos(phase + spiral_speed)
+        target_y = self.center_y + spiral_radius * math.sin(phase + spiral_speed)
 
         # Calculate the angle to the target position
         dx = target_x - x
@@ -212,10 +196,18 @@ class Game:
 
         # Check if there's a wall in the path
         if self.is_wall_in_path(x, y, target_angle):
-            # If there's a wall, choose the inner path by subtracting 90 degrees from the target angle
-            target_angle -= 90
-
+            self.wall_in_path = True
+            if random.randint(0,2) == 1:
+                self.wall_in_path = False
+        else:
+            self.wall_in_path = False
+        if len(self.bullets)>0:
+            for bullet in self.bullets:
+                if abs(bullet[0] - x) < bullet_distance_threshold and abs(bullet[1] - y) < bullet_distance_threshold:
+                    target_angle +=90
         return target_angle
+
+
 
 
 
@@ -227,9 +219,15 @@ class Game:
 
         # Write your code here... For demonstration, this bot just shoots randomly every turn.
 
-        comms.post_message({
-            "shoot": self.other_tank_angle(),
-            "move": self.move_tank()
-        })
+        if self.wall_in_path:
+            comms.post_message({
+                "shoot": self.other_tank_angle(),
+                "path": [self.x1,self.y1]
+            })
+        else:
+            comms.post_message({
+                "shoot": self.other_tank_angle(),
+                "move": self.move_tank()
+            })
 
 
